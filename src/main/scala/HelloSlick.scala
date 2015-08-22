@@ -1,12 +1,26 @@
+import org.reactivestreams.{Subscription, Subscriber}
+
+import scala.collection.mutable
 import scala.concurrent.{Future, Await}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import slick.backend.DatabasePublisher
 import slick.driver.H2Driver.api._
 
+import akka.actor.ActorSystem
+import akka.stream.ActorMaterializer
+import akka.stream.scaladsl._
+import akka.util.ByteString
+
+import scala.collection.mutable.Queue
+
+import scala.concurrent.forkjoin.ThreadLocalRandom
+import scala.util.{ Failure, Success }
+
 // The main application
 object HelloSlick extends App {
   val db = Database.forConfig("h2mem1")
+
   try {
 
     // The query interface for the Suppliers table
@@ -26,9 +40,9 @@ object HelloSlick extends App {
       suppliers += (150, "The High Ground", "100 Coffee Lane", "Meadows", "CA", "93966")
     )
 
-    def pln(x: Any) = {
-      println(x)
-      Thread.sleep(50)
+    def pln(s: String, millis: Long)(x: Any) = {
+      println(s + ": " + x)
+      Thread.sleep(millis)
     }
 
     val setupFuture: Future[Unit] = db.run(setupAction)
@@ -84,9 +98,50 @@ object HelloSlick extends App {
       val coffeeNamesPublisher: DatabasePublisher[String] =
         db.stream(coffeeNamesAction)
 
+      val coffeeNameList = Queue[String]()
+
+      val coffeeNamesSubscriber = new Subscriber[String] {
+        def onSubscribe(sn: Subscription): Unit = {
+          sn.request(100000000)
+        }
+        def onComplete(): Unit = Unit
+        def onError(t: Throwable): Unit = Unit
+        def onNext(t: String): Unit = {
+
+          println ("### enqueueing coffee name: " + t)
+
+          coffeeNameList.enqueue(t)
+        }
+      }
+
+      coffeeNamesPublisher.subscribe(coffeeNamesSubscriber)
+
+      // set up a sink for coffees
+
+      implicit val system = ActorSystem("Sys")
+
+      val it = Iterator.continually(coffeeNameList.dequeue())
+
+      // make a database source from the publisher
+      val coffeeNameSource: Source[String, Unit] =
+        Source(() => it)
+
+      // console output sink
+      val consoleSink = Sink.foreach[String](pln("consoleSink", 0))
+
+      implicit val materializer = ActorMaterializer()
+
+      println("#### running materialized")
+
+      val materialized = FlowGraph.closed(coffeeNameSource, consoleSink)((srcMat, snkMat) => snkMat)  { implicit builder =>
+        (src, snk) =>
+          import FlowGraph.Implicits._
+          src ~> snk
+      }.run()
+
       println("####### running streaming")
 
-      coffeeNamesPublisher.foreach(pln)
+      coffeeNamesPublisher.foreach(pln("foreach", 50))
 
     }.flatMap { _ =>
 
@@ -102,7 +157,7 @@ object HelloSlick extends App {
       println("####### running synchronous")
 
       // Execute the query and print the Seq of results
-      db.run(filterQuery.result.map(pln))
+      db.run(filterQuery.result.map(pln("filter", 50)))
 
     }.flatMap { _ =>
 
