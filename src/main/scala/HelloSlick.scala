@@ -127,7 +127,7 @@ object HelloSlick extends App {
         Source(() => it)
 
       // console output sink
-      val consoleSink = Sink.foreach[String](pln("consoleSink", 0))
+      val consoleSink = Sink.foreach[String](pln("consoleSink", 25))
 
       implicit val materializer = ActorMaterializer()
 
@@ -166,7 +166,7 @@ object HelloSlick extends App {
       // Construct an update query with the sales column being the one to update
       val updateQuery: Query[Rep[Int], Int, Seq] = coffees.map(_.sales)
 
-      val updateAction: DBIO[Int] = updateQuery.update(1)
+      val updateAction: DBIO[Int] = updateQuery.update(1).andThen(updateQuery.update(2)).transactionally
 
       // Print the SQL for the Coffees update query
       println("Generated SQL for Coffees update:\n" + updateQuery.updateStatement)
